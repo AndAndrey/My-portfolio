@@ -1,0 +1,97 @@
+-- step 1
+WITH all_dates AS (SELECT DISTINCT DATE_TRUNC('day', class_start_datetime) AS dt
+    FROM skyeng_db.classes
+    WHERE class_start_datetime < '2017-01-01'
+    ),
+
+-- step 2
+first_payments AS (SELECT user_id
+                        , DATE_TRUNC('day', MIN(transaction_datetime)) AS first_payment_date
+                    FROM skyeng_db.payments
+                    WHERE status_name = 'success'
+                    GROUP BY user_id
+                    ),
+
+--step 3
+all_dates_by_user AS (SELECT dt
+                           , user_id
+                      FROM all_dates t2 LEFT JOIN first_payments t3 
+                      ON t2.dt >= t3.first_payment_date
+                      ),
+
+--step 4
+payments_by_dates AS (SELECT user_id
+                                , DATE_TRUNC('day', transaction_datetime) AS payment_date
+                                , SUM(classes) AS transaction_balance_change
+                      FROM skyeng_db.payments
+                      WHERE status_name = 'success'
+                      GROUP BY user_id, DATE_TRUNC('day', transaction_datetime)
+                      ORDER BY user_id
+                      ),
+
+
+-- step 5
+payments_by_dates_cumsum AS (SELECT t4.user_id
+                                  , t4.dt
+                                  , t5.transaction_balance_change
+                                  , SUM(COALESCE(t5.transaction_balance_change, 0)) OVER(PARTITION BY t4.user_id ORDER BY t4.dt) AS transaction_balance_change_cs
+                             FROM all_dates_by_user t4
+                             LEFT JOIN payments_by_dates t5 ON t4.user_id = t5.user_id AND t4.dt = t5.payment_date
+                             ORDER BY t4.dt
+                             ),
+
+-- step 6
+classes_by_dates AS (SELECT user_id
+                          , DATE_TRUNC('day', class_start_datetime) AS class_date
+                          , COUNT(id_class) * (-1) AS classes
+                     FROM skyeng_db.classes
+                     WHERE (class_status = 'success' OR class_status =  'failed_by_student') AND class_type != 'trial'
+                     GROUP BY user_id, DATE_TRUNC('day', class_start_datetime)
+                     ),
+--step 7
+classes_by_dates_dates_cumsum AS (SELECT t6.user_id
+                                        , t6.dt
+                                        , t7.classes
+                                        , SUM(COALESCE(t7.classes, 0)) OVER(PARTITION BY t6.user_id ORDER BY t6.dt) AS classes_cs
+                                   FROM all_dates_by_user t6
+                                        LEFT JOIN classes_by_dates t7 ON t6.user_id = t7.user_id AND t6.dt = t7.class_date
+                                   ORDER BY t6.dt
+                    ),
+
+--step 8
+balances AS (SELECT t8.user_id
+                  , t8.dt
+                  , t8.transaction_balance_change
+                  , t8.transaction_balance_change_cs
+                  , t9.classes
+                  , t9.classes_cs
+                  , t9.classes_cs + t8.transaction_balance_change_cs AS balance
+            FROM payments_by_dates_cumsum t8
+                LEFT JOIN classes_by_dates_dates_cumsum t9
+                ON t8.user_id = t9.user_id AND t8.dt = t9.dt
+            ORDER BY t8.user_id, t8.dt
+            )
+            
+--task 1
+-- SELECT user_id
+--      , dt
+--      , transaction_balance_change
+--      , transaction_balance_change_cs
+--      , classes
+--      , classes_cs
+--      , balance
+-- FROM balances
+-- WHERE user_id IS NOT NULL
+-- ORDER BY user_id, dt 
+-- LIMIT 1000
+
+--task 2
+SELECT dt
+     , SUM(transaction_balance_change) AS sum_tbc
+     , SUM(transaction_balance_change_cs) AS sum_tbc_cs
+     , SUM(classes) AS sum_classes
+     , SUM(classes_cs) AS sum_classes_cs
+     , SUM(balance) AS sum_balance
+FROM balances
+GROUP BY dt
+ORDER BY dt
